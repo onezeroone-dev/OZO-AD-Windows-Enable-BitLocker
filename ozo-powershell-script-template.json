@@ -1,0 +1,9 @@
+{
+    "ExcelFileName":"ozo-powershell-script-template-report.xlsx",
+    "ExcelWorksheetName":"Items",
+    "Items":[
+        "Item1",
+        "Item2",
+        "Item3"
+    ]
+}
