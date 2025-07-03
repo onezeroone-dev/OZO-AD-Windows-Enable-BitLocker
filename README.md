@@ -5,7 +5,7 @@ Enables BitLocker on all local fixed volumes after verifying that the endpoint m
 This script requires the _BitLocker_ and _TrustedPlatformModule_ PowerShell modules which should be present on all recent Windows Education, Enterprise, and Pro editions.
 
 ## Deployment
-For software deployments, download the [https://github.com/onezeroone-dev/OZO-Windows-Enable-BitLocker/releases](latest release) and deploy according to the process for the endpoint management tool of your choice. Alternatively, you could issue a command to your endpoints to install the script (as detailed in Installation, below) and then reference the script installation location in your endpoint management tool deployment command.
+For software deployments, download the [latest release](https://github.com/onezeroone-dev/OZO-Windows-Enable-BitLocker/releases) and deploy according to the requirements of your chosen endpoint management tool. Alternatively, you could issue a command to your endpoints to install the script (as detailed in Installation, below) and then reference the script installation location in your endpoint management tool deployment command.
 
 ## Installation
 This script is published to [PowerShell Gallery](https://learn.microsoft.com/en-us/powershell/scripting/gallery/overview?view=powershell-5.1). Ensure your system is configured for this repository then execute the following in an _Administrator_ PowerShell:
