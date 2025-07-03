@@ -1,4 +1,4 @@
-# OZ AD Windows Enable BitLocker Installation and Usage
+# OZ AD Windows Enable BitLocker Installation/Deployment and Usage
 Enables BitLocker on all local fixed volumes after verifying that the endpoint meets the BitLocker prerequisites and has successfully recorded a recovery password in Active Directory. This script is executed on the endpoint either manually or with an endpoint management tool like Intune or Tanium.
 
 ## Prerequisites
