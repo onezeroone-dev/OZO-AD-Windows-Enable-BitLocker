@@ -1,7 +1,7 @@
 # OZ AD Windows Enable BitLocker Deployment, Installation, and Usage
 Enables BitLocker on all local fixed volumes after verifying that the endpoint meets the BitLocker prerequisites and has successfully recorded a recovery password in Active Directory. This script is executed on the endpoint either manually or with an endpoint management tool like Intune or Tanium.
 
-For guidance on understanding, configuring, and managing BitLocker in an Active Directory environment, please see [GUIDE.md](.\GUIDE.md).
+For guidance on understanding, configuring, and managing BitLocker in an Active Directory environment, please see [GUIDE.md](GUIDE.md).
 
 ## Prerequisites
 This script requires the _BitLocker_ and _TrustedPlatformModule_ PowerShell modules which should be present on all recent Windows Education, Enterprise, and Pro editions.
