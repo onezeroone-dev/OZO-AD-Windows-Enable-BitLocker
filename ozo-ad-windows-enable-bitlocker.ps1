@@ -407,6 +407,41 @@ Class OZOBLVolume {
 }
 
 # FUNCTIONS
+Function Get-OZOPSArgumentList {
+    # Parameters
+    Param (
+        [Parameter(Mandatory=$true)][System.Object]$InvocationInfo
+    )
+    # Local variables
+    [System.Collections.Generic.List[String]]$ArgumentList = @()
+    # Add arguments to list
+    $ArgumentList.Add("-ExecutionPolicy")
+    $ArgumentList.Add("ByPass")
+    $ArgumentList.Add("-WindowStyle")
+    $ArgumentList.Add("Hidden")
+    $ArgumentList.Add("-NonInteractive")
+    $ArgumentList.Add("-File")
+    $ArgumentList.Add(('"' + $InvocationInfo.MyCommand.Definition + '"'))
+    # Iterate through the bound parameters and add to list
+    ForEach ($BoundParameter in $InvocationInfo.BoundParameters.GetEnumerator()) {
+        Switch ($BoundParameter.Value.GetType().Name) {
+            "String" {
+                $ArgumentList.Add("-" + $BoundParameter.Key)
+                $ArgumentList.Add('"' + $BoundParameter.Value + '"')
+            }
+            "SwitchParameter" {
+                If ($BoundParameter.Value -eq $true) { $ArgumentList.Add("-" + $BoundParameter.Key) }
+            }
+            default {
+                $ArgumentList.Add("-" + $BoundParameter.Key)
+                $ArgumentList.Add($BoundParameter.Value)
+            }
+        }
+    }
+    # Return
+    return $ArgumentList
+}
+
 Function Write-OZOProvider {
     [CmdLetBinding()] Param(
         [Parameter(Mandatory=$true)] [String] $Message,
@@ -445,7 +480,7 @@ If ([Environment]::Is64BitOperatingSystem -eq $true -And [Environment]::Is64BitP
     # Process is not 64-bit; log
     Write-OZOProvider -Message ("Running in 32-bit PowerShell; attempting to re-launch " + $MyInvocation.InvocationName + " in 64-bit PowerShell") -Level "Warning"
     # Re-launch using 64-bit PowerShell
-    Invoke-Expression -Command ((Join-Path -Path $Env:Windir -ChildPath "SysNative\WindowsPowerShell\v1.0\powershell.exe") + " -ExecutionPolicy ByPass -WindowStyle Hidden -NonInteractive -File `"" + $MyInvocation.InvocationName + "`"") -ErrorAction Stop
+    Start-Process -FilePath (Join-Path -Path $Env:Windir -ChildPath "SysNative\WindowsPowerShell\v1.0\powershell.exe") -ArgumentList (Get-OZOPSArgumentList -InvocationInfo $MyInvocation) -Wait -NoNewWindow -ErrorAction Stop
 } Else {
     # OS is 64-bit and PowerShell is 64-bit; log
     Write-OZOProvider -Message "Running in 64-bit PowerShell." -Level "Information"

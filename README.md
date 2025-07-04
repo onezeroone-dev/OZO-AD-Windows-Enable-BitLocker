@@ -42,3 +42,6 @@ ozo-ad-windows-enable-bitlocker -GPOName "All Workstations Settings" -Restart
 
 ## Logging
 Messages are written to the Windows Event Viewer _One Zero One_ provider. When this provider is not available, messages are written to the _Microsoft-Windows-PowerShell_ provider with Event ID 4100.
+
+## Acknowledgements
+Special thanks to my employer, [Sonic Healthcare USA](https://sonichealthcareusa.com), who supports the growth of my PowerShell skillset and enables me to contribute portions of my work product to the PowerShell community.
