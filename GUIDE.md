@@ -17,7 +17,7 @@ BitLocker settings are found in Group Policy Management Editor by navigating to 
 
 <img src=".\BitLocker-GPME.png" width=800>
 
-<BR>See Microsoft's [Configure BitLocker](https://learn.microsoft.com/en-us/windows/security/operating-system-security/data-protection/bitlocker/configure?tabs=common) article for guidance on configuring BitLocker. Among other settings, you can define the encryption type and ensure that recovery information is stored on the corresponding Active Directory computer object before encrypting, e.g:
+See Microsoft's [Configure BitLocker](https://learn.microsoft.com/en-us/windows/security/operating-system-security/data-protection/bitlocker/configure?tabs=common) article for guidance on configuring BitLocker. Among other settings, you can define the encryption type and ensure that recovery information is stored on the corresponding Active Directory computer object before encrypting, e.g:
 
 <img src=".\BitLocker-Settings-GPResults.jpeg" width=800>
 
@@ -26,7 +26,7 @@ BitLocker recovery information is stored in the corresponding AD computer object
 
 <img src=".\BitLocker-Computer-Object-Recovery-Information.png" width=400>
 
-<BR>The _tab_ will appear for all _Active Directory Users and Computers_ users, however the _information on this tab_ will appear--by default--for only the members of the _Domain Admins_ group. You can delegate read access to this information to other users and groups to enable them to perform recovery operations. To perform the delegation:
+The _tab_ will appear for all _Active Directory Users and Computers_ users, however the _information on this tab_ will appear--by default--for only the members of the _Domain Admins_ group. You can delegate read access to this information to other users and groups to enable them to perform recovery operations. To perform the delegation:
 
 1. Open _Active Directory Users and Computers_.
 1. Locate and right-click the OU containing computer objects and select _Delegate Control..._
@@ -41,7 +41,7 @@ BitLocker recovery information is stored in the corresponding AD computer object
 
     <img src=".\BitLocker-Delegation-03.png" width=400>
 
-1. Select _Only the following objects in the folder_, check _msFVE-RecoveryInformation_, and click _Next_.
+1. Select _Only the following objects in the folder_, check _msFVE-RecoveryInformation objects_, and click _Next_.
 
     <img src=".\BitLocker-Delegation-04.png" width=400>
 
