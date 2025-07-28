@@ -2,4 +2,5 @@
 
 |Date|Version|Comment|
 |----|-------|-------|
+|2025-Jul-27|1.1.0|Improved handling of secondary fixed disks.|
 |2025-Jul-02|1.0.0|Initial release.|

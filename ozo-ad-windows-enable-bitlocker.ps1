@@ -1,7 +1,7 @@
 #Requires -Version 5.1 -RunAsAdministrator
 
 <#PSScriptInfo
-    .VERSION 1.0.0
+    .VERSION 1.1.0
     .GUID c253d6ab-fb10-4d07-b03c-f2b630a39fa1
     .AUTHOR Andy Lievertz <alievertz@onezeroone.dev>
     .COMPANYNAME One Zero One
@@ -46,27 +46,130 @@
 Class OZOMain {
     # PROPERTIES: Booleans, Strings
     [Boolean] $Restart     = $false
-    [Boolean] $skipSBCheck = $false
     [XML]     $rsopXml     = $null
     # PROPERTIES: Lists
-    [System.Collections.Generic.List[PSCustomObject]] $blVolumes = @()
+    [System.Collections.Generic.List[PSCustomObject]] $blOSVolumes = @()
+    [System.Collections.Generic.List[PSCustomObject]] $blDataVolumes = @()
+
     # METHODS: Constructor method
     OZOMain($GPOName,$Restart,$SkipSecureBootCheck) {
         # Set properties
         $this.Restart = $Restart
-        # Letting skipSBCheck = $true for now - once we work out how to relaunch in 64-bit with parameters passed, this can be uncommented
-        $this.skipSBCheck = $SkipSecureBootCheck
         # Declare ourselves to the world
         Write-OZOProvider -Message "Starting process." -Level "Information"
         # Determine if the environment validates, the GPO is refreshed, the required GPO is adopted, [Secure Boot is enabled], and the TPM is good
-        If (($this.ValidateEnvironment() -And $this.GenerateRSoP() -And $this.EvaluateGPOSettings($GPOName) -And $this.EvaluateSecureBoot() -And $this.EvaluateTPM()) -eq $true) {
+        If (($this.ValidateEnvironment() -And $this.GenerateRSoP() -And $this.EvaluateGPOSettings($GPOName) -And $this.EvaluateSecureBoot($SkipSecureBootCheck) -And $this.EvaluateTPM()) -eq $true) {
             # The environment validates, the GPO is refreshed, the required GPO is adopted, [Secure Boot is enabled], and the TPM is good; iterate on the BitLocker volume mount points
-            ForEach ($mountPoint in (Get-BitLockerVolume).MountPoint) {
-                # Determine if mount point is a letter
-                If (($mountPoint -Split(":"))[0] -CMatch "^[A-Z]") {
-                    # Create an OZOBLVolume object for this mount point
-                    $this.blVolumes.Add(([OZOBLVolume]::new($mountPoint)))
+            ForEach ($blVolume in (Get-BitLockerVolume)) {
+                # Determine if this volume has a letter
+                If (($blVolume.MountPoint -Split(":")[0]).ToUpper() -CMatch "^[A-Z]") {
+                    # Volume has a letter; determine if volume is an operating system volume
+                    If ($blVolume.VolumeType -eq "OperatingSystem") {
+                        # Volume is operating system; create blvolume object and add to blOSVolumes
+                        $this.blOSVolumes.Add(([OZOBLVolume]::new($blVolume.MountPoint)))
+                    }
+                    # Determine if volume is a data volume
+                    If ($blVolume.VolumeType -eq "Data") {
+                        # Volume is a data; create a blVolume object and add to blDataVolumes
+                        $this.blDataVolumes.Add(([OZOBLVolume]::new($blVolume.MountPoint)))
+                    }
                 }
+            }
+            # Log findings
+            Write-OZOProvider -Message ("Found " + $this.blOSVolumes.Count.ToString() + " OperatingSystem volumes and " + $this.blDataVolumes.Count.ToString() + " Data volumes.") -Level "Information"
+            # Process the OS volume
+            ForEach ($blOSVolume in $this.blOSVolumes) {
+                # Switch on physical volume type + BitLocker volume type + BitLocker volume status + BitLocker protection status
+                Switch -Wildcard ($blOSVolume.phyVolume.DriveType + " " + $blOSVolume.blVolume.VolumeType + " " + $blOSVolume.blVolume.VolumeStatus + " " + $blOSVolume.blVolume.ProtectionStatus) {
+                    ("Removable*") {
+                        # Removable volume; do nothing
+                        Write-OZOProvider -Message ($blOSVolume.blVolume.MountPoint + " is a removable volume; skipping") -Level "Warning"
+                    }
+                    ("Fixed OperatingSystem FullyEncrypted On") {
+                        # Fixed operating system volume with BitLocker enabled and protection status On; determine if protection is not TPM + RecoveryPassword
+                        If ($blOSVolume.blVolume.KeyProtector.KeyProtectorType -Contains "Tpm" -And $blOSVolume.blVolume.KeyProtector.KeyProtectorType -Contains "RecoveryPassword") {
+                            # Volume has correct protectors
+                            Write-OZOProvider -Message ($blOSVolume.blVolume.MountPoint + " is encrypted and already has the correct protectors; skipping") -Level "Information"
+                        } Else {
+                            # Volume does not have the correct protectors; decrypt then encrypt with proper protectors
+                            Write-OZOProvider -Message ($blOSVolume.blVolume.MountPoint + " is encrypted but does not have the correct protectors; decrypting then re-encrypting. Any encrypted fixed volumes will also be decrypted but will not be re-encrypted--they will be encrypted on the next run of this script after the OS volume has finished encrypting.") -Level "Warning"
+                            # First decrypt any fixed volumes
+                            ForEach ($blDataVolume in $this.blDataVolumes) { $blDataVolume.DisableBitLocker() }
+                            # Then decrypt the OS volume
+                            $blOSVolume.DisableBitLocker()
+                            # Then encrypt the OS volume - the Data volumes will be re-encrypted on the next run of this script after the OS volume has finished encrypting
+                            $blOSVolume.EnableBitLocker()
+                        }
+                    }
+                    ("Fixed OperatingSystem FullyEncrypted Off") {
+                        # Fixed operating system volume with BitLocker enabled but no key protectors; decrypt and encrypt
+                        Write-OZOProvider -Message ($blOSVolume.blVolume.MountPoint + " is encrypted but has no protectors; decrypting then re-encrypting. Any encrypted fixed volumes will also be decrypted but will not be re-encrypted--they will be encrypted on the next run of this script after the OS volume has finished encrypting.") -Level "Warning"
+                        # First decrypt any fixed volumes
+                        ForEach ($blDataVolume in $this.blDataVolumes) { $blDataVolume.DisableBitLocker() }
+                        # Then decrypt the OS volume
+                        $blOSVolume.DisableBitLocker()
+                        # Then encrypt the OS volume - the Data volumes will be re-encrypted on the next run of this script after the OS volume has finished encrypting
+                        $blOSVolume.EnableBitLocker()
+                    }
+                    ("Fixed OperatingSystem FullyDecrypted Off") {
+                        # Fixed operating system volume with BitLocker disabled; determine if there is a Tpm AND RecoveryPassword protectors
+                        If ($blOSVolume.blVolume.KeyProtector.KeyProtectorType -Contains "Tpm" -And $blOSVolume.blVolume.KeyProtector.KeyProtectorType -Contains "RecoveryPassword") {
+                            # Fixed volume is not encrypted but has Tpm AND RecoveryPassword protectors = pending reboot; skip
+                            Write-OZOProvider -Message ($blOSVolume.blVolume.MountPoint + " is pending reboot; skipping.") -Level "Warning"
+                        } Else {
+                            # Fixed volume with no encryption and does not have a TPM protector AND a RecoveryPassword protector; encrypt
+                            Write-OZOProvider -Message ($blOSVolume.blVolume.MountPoint + " is not encrypted; encrypting.") -Level "Warning"
+                            $blOSVolume.EnableBitLocker()
+                        }
+                    }
+                    default {
+                        # Nothing to do
+                        Write-OZOProvider -Message ($blOSVolume.blVolume.MountPoint + " meets no criteria (likely already encrypted with correct protectors)") -Level "Information"
+                    }
+                }
+            }
+            # Determine if the OS volume is already encrypted
+            If ((Get-BitLockerVolume | Where-Object {$_.VolumeType -eq "OperatingSystem"}).VolumeStatus -eq "FullyEncrypted") {
+                # OS volume is already encrypted; process the Data volume(s)
+                ForEach ($blDataVolume in $this.blDataVolumes) {
+                    # Switch on physical volume type + BitLocker volume type + BitLocker volume status + BitLocker protection status
+                    Switch -Wildcard ($blDataVolume.phyVolume.DriveType + " " + $blDataVolume.blVolume.VolumeType + " " + $blDataVolume.blVolume.VolumeStatus + " " + $blDataVolume.blVolume.ProtectionStatus) {
+                        ("Removable*") {
+                            # Removable volume; do nothing
+                            Write-OZOProvider -Message ($blDataVolume.blVolume.MountPoint + " is a removable volume; skipping") -Level "Warning"
+                        }
+                        ("Fixed Data FullyEncrypted On") {
+                            # Fixed data volume with BitLocker enabled and protection status On; determine if protection is not RecoveryPassword
+                            If ($blDataVolume.blVolume.KeyProtector.KeyProtectorType -Contains "RecoveryPassword") {
+                                # Volume has correct protectors
+                                Write-OZOProvider -Message ($blDataVolume.blVolume.MountPoint + " is encrypted and already has the correct protectors; skipping") -Level "Information"
+                            } Else {
+                                # Volume does not have the correct protectors; decrypt then encrypt with proper protectors
+                                Write-OZOProvider -Message ($blDataVolume.blVolume.MountPoint + " is encrypted but does not have the correct protectors; decrypting then re-encrypting.") -Level "Warning"
+                                $blDataVolume.DisableBitLocker()
+                                $blDataVolume.EnableBitLocker()
+                            }
+                        }
+                        ("Fixed Data FullyEncrypted Off") {
+                            # Fixed data volume with BitLocker enabled but no key protectors; decrypt and encrypt
+                            Write-OZOProvider -Message ($blDataVolume.blVolume.MountPoint + " is encrypted but has no protectors; decrypting then re-encrypting.") -Level "Warning"
+                            $blDataVolume.DisableBitLocker()
+                            $blDataVolume.EnableBitLocker()
+                        }
+                        ("Fixed Data FullyDecrypted Off") {
+                            # Fixed volume with BitLocker disabled; enable BitLocker regardless of protector status
+                            Write-OZOProvider -Message ($blDataVolume.blVolume.MountPoint + " is not encrypted; encrypting.") -Level "Warning"
+                            $blDataVolume.EnableBitLocker()
+                        }
+                        default {
+                            # Nothing to do
+                            Write-OZOProvider -Message ($blDataVolume.blVolume.MountPoint + " meets no criteria (likely already encrypted with correct protectors)") -Level "Information"
+                        }
+                    }
+                }
+            } Else {
+                # OS volume is not already encrypted; skip the fixed volumes
+                Write-OZOProvider -Message ("OS volume is not encrypted; skipping encrypting fixed volumes.") -Level "Warning"
             }
             # Call RestartComputer to determine if a restart is requested and (if yes) execute it
             $this.RestartComputer()
@@ -151,11 +254,11 @@ Class OZOMain {
         return $Return
     }
     # METHODS: Evaluate SecureBoot method
-    Hidden [Boolean] EvaluateSecureBoot() {
+    Hidden [Boolean] EvaluateSecureBoot($SkipSecureBootCheck) {
         # Control variable
         [Boolean] $Return = $true
         # Determine if we are not skipping Secure Boot check
-        If ($this.skipSBCheck -eq $false) {
+        If ($SkipSecureBootCheck -eq $false) {
             # We are not skipping Secure Boot check; determine if SecureBoot is present and enabled
             Try {
                 Confirm-SecureBootUEFI -ErrorAction Stop
@@ -229,48 +332,6 @@ Class OZOBLVolume {
         $this.mountPoint = $MountPoint
         # Read the volume
         $this.ReadVolume()
-        # Switch on DriveType + VolumeStatus + ProtectionStatus
-        Switch -Wildcard ($this.phyVolume.DriveType + " " + $this.blVolume.VolumeStatus + " " + $this.blVolume.ProtectionStatus) {
-            ("Removable*") {
-                # Removable disk; do nothing
-                Write-OZOProvider -Message ($this.blVolume.MountPoint + " is a removable disk; skipping") -Level "Warning"
-            }
-            ("Fixed FullyEncrypted On") {
-                # Fixed disk with BitLocker enabled and Protectionstatus on; determine if protection is not TPM + RecoveryPassword
-                If ($this.blVolume.KeyProtector.KeyProtectorType -NotContains "Tpm" -And $this.blVolume.KeyProtector.KeyProtectorType -NotContains "RecoveryPassword") {
-                    # Volume does not have the correct protectors; decrypt then encrypt with proper protectors
-                    Write-OZOProvider -Message ($this.blVolume.MountPoint + " is encrypted but does not have the correct protectors; decrypting then re-encrypting.") -Level "Warning"
-                    $this.DisableBitLocker()
-                    $this.EnableBitLocker()
-                } Else {
-                    # Volume has correct protectors
-                    Write-OZOProvider -Message ($this.blVolume.MountPoint + " is encrypted and already has the correct protectors; skipping") -Level "Information"
-                }
-            }
-            ("Fixed FullyEncrypted Off") {
-                # Fixed disk with BitLocker enabled but no key protectors; decrypt and encrypt
-                Write-OZOProvider -Message ($this.blVolume.MountPoint + " is encrypted but has no protectors; decrypting then re-encrypting.") -Level "Warning"
-                $this.DisableBitLocker()
-                $this.EnableBitLocker()
-            }
-            ("Fixed FullyDecrypted Off") {
-                # Determine if there are NOT Tpm and RecoveryPassword protectors (Fixed FullyDecrypted Off but with Tpm and RecoveryPassword protectors indicates that BitLocker has been enabled but is pending reboot)
-                If ($this.blVolume.KeyProtector.KeyProtectorType -NotContains "Tpm" -And $this.blVolume.KeyProtector.KeyProtectorType -NotContains "RecoveryPassword") {
-                    # Fixed disk with no encryption and not pending reboot; encrypt
-                    Write-OZOProvider -Message ($this.blVolume.MountPoint + " is not encrypted; encrypting.") -Level "Warning"
-                    $this.EnableBitLocker()
-                } Else {
-                    # Fixed disk with no encryption and pending reboot; skip
-                    Write-OZOProvider -Message ($this.blVolume.MountPoint + " is pending reboot; skipping.") -Level "Warning"
-                }
-            }
-            default {
-                # Nothing to do
-                Write-OZOProvider -Message ($this.blVolume.MountPoint + " meets no criteria (likely already encrypted with correct protectors)") -Level "Information"
-            }
-        }
-        # Reread the volume
-        $this.ReadVolume()
     }
     # METHODS: Read volume method
     Hidden [Void] ReadVolume() {
@@ -281,28 +342,57 @@ Class OZOBLVolume {
     }
     # METHODS:
     [Void] EnableBitLocker() {
-        # Call ManageTpmProtector, ManageRecoveryPasswordProtector, and BackupKeyProtector to determine if we can enable BitLocker
-        If (($this.ManageTpmProtector() -And $this.ManageRecoveryPasswordProtector() -And $this.BackupKeyProtector()) -eq $true) {
-            # TPM Protector is managed, RecoveryPassword protector is managed and keys are backed up to AD; enable BitLocker
-            Try {
-                Enable-BitLocker -MountPoint $this.blVolume.MountPoint -TpmProtector -ErrorAction Stop
-                # Success
-                Write-OZOProvider -Message ("Enabled Bitlocker on " + $this.blVolume.MountPoint + ".") -Level "Information"
-                # Determine if this volume is *not* the OS volume
-                If ($this.blVolume.VolumeType -ne "OperatingSystem") {
-                    # Volume is not the OS volume; try to enable automagic unlock
+        # Determine if volume is operating system
+        If ($this.blVolume.VolumeType -eq "OperatingSystem") {
+            # Volume is operating system; call RemoveTpmProtector, RemoveRecoveryPasswordProtector, AddRecoveryPasswordProtctor, and BackupKeyProtector to set conditions for enabling BitLocker
+            If (($this.RemoveTpmProtector() -And $this.RemoveRecoveryPasswordProtector() -And $this.AddRecoveryPasswordProtector() -And $this.BackupKeyProtector()) -eq $true) {
+                # TPM Protector is removed, RecoveryPassword protector is removed and added, and keys are backed up to AD; try to enable BitLocker with TPM protector
+                Try {
+                    Enable-BitLocker -MountPoint $this.blVolume.MountPoint -TpmProtector -ErrorAction Stop
+                    # Success
+                    Write-OZOProvider -Message ("Enabled Bitlocker on " + $this.blVolume.MountPoint + ".") -Level "Information"
+                } Catch {
+                    # Failure
+                    Write-OZOProvider -Message ("Error enabling BitLocker on " + $this.blVolume.MountPoint + ". Error message is: " + $_) -Level "Error"
+                }
+            }
+        } Else {
+            # Volume is data; determine if OS volume is already encrypted
+            If ((Get-BitLockerVolume | Where-Object {$_.VolumeType -eq "OperatingSystem"}).VolumeStatus -eq "FullyEncrypted") {
+                # OS volume is already encrypted; call RemoveRecoveryPasswordProtector to set conditions for enabling BitLocker
+                If ($this.RemoveRecoveryPasswordProtector() -eq $true) {
+                    # RecoveryPassword protector is removed; enable BitLocker with RecoveryPasswordProtector
                     Try {
-                        Enable-BitLockerAutoUnlock -MountPoint $this.blVolume.MountPoint -ErrorAction Stop
+                        Enable-BitLocker -MountPoint $this.blVolume.MountPoint -RecoveryPasswordProtector -ErrorAction Stop
                         # Success
-                        Write-OZOProvider -Message ("Set auto-unlock for " + $this.blVolume.MountPoint + ".") -Level "Information"
+                        Write-OZOProvider -Message ("Enabled Bitlocker on " + $this.blVolume.MountPoint + ".") -Level "Information"
+                        # Try to enable automagic unlock
+                        Try {
+                            Enable-BitLockerAutoUnlock -MountPoint $this.blVolume.MountPoint -ErrorAction Stop
+                            # Success
+                            Write-OZOProvider -Message ("Set auto-unlock for " + $this.blVolume.MountPoint + ".") -Level "Information"
+                        } Catch {
+                            # Failure
+                            Write-OZOProvider -Message ("Error setting auto-unlock on " + $this.blVolume.MountPoint + ". Error message is: " + $_) -Level "Error"
+                        }
+                        # Reread the volume
+                        $this.ReadVolume()
+                        # Determine if key is not backed up to AD
+                        If ($this.BackupKeyProtector() -eq $false) {
+                            # Key was not backed up to AD; call DisableBitLocker and determine if it has not been disabled
+                            If ($this.DisableBitLocker() -eq $false) {
+                                # BitLocker has not been disabled
+                                Write-OZOProvider -Message ("Error disabling BitLocker on " + $this.blVolume.MountPoint + ". Error message is: " + $_) -Level "Error"
+                            }
+                        }
                     } Catch {
                         # Failure
-                        Write-OZOProvider -Message ("Error setting auto-unlock on " + $this.blVolume.MountPoint + ". Error message is: " + $_) -Level "Error"
+                        Write-OZOProvider -Message ("Error enabling BitLocker on " + $this.blVolume.MountPoint + ". Error message is: " + $_) -Level "Error"
                     }
                 }
-            } Catch {
-                # Failure
-                Write-OZOProvider -Message ("Error enabling BitLocker on " + $this.blVolume.MountPoint + ". Error message is: " + $_) -Level "Error"
+            } Else {
+                # OS volume is not yet encrypted
+                Write-OZOProvider -Message ("Can not enable BitLocker on " + $this.blVolume.MountPoint + " because the OS volume is not BitLocker encrypted.") -Level "Warning"
             }
         }
         # Re-read the volume
@@ -332,8 +422,8 @@ Class OZOBLVolume {
         # Return
         return $Return
     }
-    # METHODS: Manage TPM Protector method
-    Hidden [Boolean] ManageTpmProtector() {
+    # METHODS: Remove TPM Protector method
+    Hidden [Boolean] RemoveTpmProtector() {
         # Control variable
         $Return = $true
         # Determine if a TPM Protector is defined
@@ -341,7 +431,7 @@ Class OZOBLVolume {
             # Found existing TPM protector (dealbreaker)
             Write-OZOProvider -Message ("TPM protector for " + $this.blVolume.MountPoint + " already exists; attempting to remove.") -Level "Warning"
             # Try to remove
-            ForEach ($keyProtectorID in ($this.blVolume.KeyProtector.KeyProtectorID)) {
+            ForEach ($keyProtectorID in ($this.blVolume.KeyProtector | Where-Object {$_.KeyProtectorType -eq "Tpm"}).KeyProtectorID) {
                 Try {
                     Remove-BitLockerKeyProtector -MountPoint $this.blVolume.MountPoint -KeyProtectorId $keyProtectorID -ErrorAction Stop
                     # Success
@@ -358,24 +448,34 @@ Class OZOBLVolume {
         # Return
         return $Return
     }
-    # METHODS: Manage RecoveryPassword Protector method
-    Hidden [Boolean] ManageRecoveryPasswordProtector() {
+    # METHODS: Remove RecoveryPassword Protector method
+    Hidden [Boolean] RemoveRecoveryPasswordProtector() {
         # Control variable
         $Return = $true
-        # Determine if a RecoveryPassword protector exists
-        If (($this.blVolume.KeyProtector | Where-Object {$_.KeyProtectorType -eq "RecoveryPassword"}).Count -eq 0) {
-            # None found; log
-            Write-OZOProvider -Message ("No Recovery Password protector found for " + $this.blVolume.MountPoint + "; attempting to add.") -Level "Information"
-            # Try to add a RecoveryPassword protector
-            Try {
-                Add-BitLockerKeyProtector -MountPoint $this.blVolume.MountPoint -RecoveryPasswordProtector -ErrorAction Stop
-                # Success
-                Write-OZOProvider -Message ("Added Recovery Password protector for " + $this.blVolume.MountPoint + ".") -Level "Information"
-            } Catch {
-                # Failure
-                Write-OZOProvider -Message ("Error adding Recovery Password protector for " + $this.blVolume.MountPoint + ". Error message is: " + $_) -Level "Error"
-                $Return = $false
-            }
+        # Iterate through any recovery password protectors
+        ForEach ($keyProtectorID in ($this.blVolume.KeyProtector | Where-Object {$_.KeyProtectorType -eq "RecoveryPassword"}).KeyProtectorID) {
+            # Remove the protector
+            Remove-BitLockerKeyProtector -MountPoint $this.mountPoint -KeyProtectorId $keyProtectorID
+            Write-OZOProvider -Message ("Removed recovery password protector " + $keyProtectorID + " for " + $this.blVolume.MountPoint + ".") -Level "Information"
+        }
+        # Re-read volume
+        $this.ReadVolume()
+        # Return
+        return $Return
+    }
+    # METHODS: Add RecoveryPassword Protector method
+    Hidden [Boolean] AddRecoveryPasswordProtector() {
+        # Control variable
+        $Return = $true
+        # Try to add a recovery password protector
+        Try {
+            Add-BitLockerKeyProtector -MountPoint $this.blVolume.MountPoint -RecoveryPasswordProtector -ErrorAction Stop
+            # Success
+            Write-OZOProvider -Message ("Added Recovery Password protector for " + $this.blVolume.MountPoint + ".") -Level "Information"
+        } Catch {
+            # Failure
+            Write-OZOProvider -Message ("Error adding Recovery Password protector for " + $this.blVolume.MountPoint + ". Error message is: " + $_) -Level "Error"
+            $Return = $false
         }
         # Re-read volume
         $this.ReadVolume()
@@ -385,13 +485,16 @@ Class OZOBLVolume {
     # METHODS: Backup Key Protector method
     Hidden [Boolean] BackupKeyProtector() {
         # Control variable
-        [Boolean] $Return = $true
+        [Boolean] $Return = $false
+        # Ensure there is a recovery password protector
+        If (($this.blVolume.KeyProtector.KeyProtectorType) -NotContains "RecoveryPassword") { $this.AddRecoveryPasswordProtector() }
         # Iterate through all RecoveryPassword protectors and back them up to AD
         ForEach ($keyProtector in ($this.blVolume.KeyProtector | Where-Object {$_.KeyProtectorType -eq "RecoveryPassword"})) {
             # Try to back up the key protector
             Try {
                 Backup-BitLockerKeyProtector -MountPoint $this.blVolume.MountPoint -KeyProtectorId $keyProtector.KeyProtectorID -ErrorAction Stop
                 # Success
+                $Return = $true
                 Write-OZOProvider -Message ("Recovery Password protector for " + $this.blVolume.MountPoint + " backed up to AD.") -Level "Information"
             } Catch {
                 # Failure
